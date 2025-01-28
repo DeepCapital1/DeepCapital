@@ -1,0 +1,15 @@
+requests==2.31.0
+python-dotenv==1.0.0
+pandas==2.1.4
+ccxt==4.1.13
+numpy==1.26.2
+pytest==7.4.3
+python-binance==1.0.19
+streamlit==1.29.0
+plotly==5.18.0
+tweepy==4.14.0
+beautifulsoup4==4.12.2
+selenium==4.16.0
+webdriver-manager==4.0.1
+aiohttp==3.9.1
+newspaper3k==0.2.8 
