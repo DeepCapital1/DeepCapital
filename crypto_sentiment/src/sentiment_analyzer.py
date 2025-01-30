@@ -26,11 +26,14 @@ class SentimentAnalyzer:
         
         # Initialize data collector
         self.data_collector = DataCollector()
+        self.twitter_initialized = False
         
     async def init(self):
         """Initialize the data collector"""
-        await self.data_collector.init()
-
+        if not self.twitter_initialized:
+            await self.data_collector.init()
+            self.twitter_initialized = True
+            
     def analyze_text(self, text):
         """
         Analyze the sentiment of a given text using DeepSeek's step-by-step reasoning.
@@ -156,15 +159,28 @@ class SentimentAnalyzer:
         else:
             return "Strong negative correlation: Sentiment strongly inversely predicts price movements"
 
-    async def analyze_crypto_ticker(self, ticker, hours_back=24):
+    async def analyze_crypto_ticker(self, ticker, hours_back=24, max_tweets=50, progress_callback=None):
         """
         Optimized analysis of a crypto ticker using Twitter data.
+        
+        Args:
+            ticker (str): The cryptocurrency ticker to analyze (e.g., $BTC)
+            hours_back (int): Number of hours of historical data to analyze
+            max_tweets (int): Maximum number of tweets to analyze (10-100)
+            progress_callback (callable): Function to call with progress updates
         """
+        if not self.twitter_initialized:
+            raise RuntimeError("Twitter functionality not initialized. Call init() first.")
+            
+        if progress_callback is None:
+            progress_callback = lambda x: None  # No-op function if no callback provided
+            
         print(f"\n🔄 Starting analysis for {ticker}")
+        progress_callback(f"Searching for {ticker} tweets from the past {hours_back} hours")
         
         # Collect data
         print("\n🔎 Searching for recent tweets...")
-        data = await self.data_collector.aggregate_data(ticker, hours_back)
+        data = await self.data_collector.aggregate_data(ticker, hours_back, max_tweets, progress_callback)
         if data.empty:
             print("❌ No tweets found")
             return {
@@ -175,13 +191,31 @@ class SentimentAnalyzer:
         # Analyze each source
         total_tweets = len(data)
         print(f"\n📊 Found {total_tweets} tweets to analyze")
+        progress_callback(f"Found {total_tweets} relevant tweets to analyze")
         analyses = []
         
         print("\n🧠 Starting sentiment analysis...")
+        analysis_messages = [
+            "Analyzing market sentiment and impact",
+            "Processing tweet context and implications",
+            "Evaluating market signals and trends",
+            "Calculating sentiment metrics",
+            "Assessing market momentum",
+            "Analyzing trading signals",
+            "Evaluating price action correlation",
+            "Processing market indicators"
+        ]
+        
+        # Analyze tweets
         for idx, row in enumerate(data.iterrows(), 1):
             _, row = row
             try:
                 print(f"\n📝 Analyzing tweet {idx}/{total_tweets}")
+                progress_callback(f"Analyzing tweet {idx}/{total_tweets}")
+                
+                # Show different progress messages during analysis
+                if idx % 3 == 1:  # Show a different message every 3rd tweet
+                    progress_callback(analysis_messages[idx % len(analysis_messages)])
                 
                 analysis = self.analyze_text(row['text'])
                 analysis['source'] = 'twitter'
@@ -204,6 +238,7 @@ class SentimentAnalyzer:
             }
 
         print(f"\n✅ Successfully analyzed {len(analyses)} tweets")
+        progress_callback(f"Successfully analyzed {len(analyses)} tweets")
 
         # Calculate weighted sentiment score
         print("\n📊 Calculating overall sentiment...")
@@ -220,9 +255,11 @@ class SentimentAnalyzer:
             
         weighted_sentiment = (df['sentiment_score'] * df['weight']).sum() / df['weight'].sum()
         print(f"📈 Overall sentiment score: {weighted_sentiment:.2f}")
+        progress_callback(f"Calculating final sentiment analysis (Score: {weighted_sentiment:.2f})")
 
         # Generate summary using DeepSeek
         print("\n🤖 Generating comprehensive analysis...")
+        progress_callback("Generating comprehensive market analysis")
         summary_prompt = f"""Generate a comprehensive market analysis for {ticker} with the following structure:
 
         Analysis Summary

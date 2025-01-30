@@ -12,7 +12,7 @@ from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.firefox import GeckoDriverManager
 import time
 import random
 import asyncio
@@ -75,21 +75,37 @@ class TwitterScraper:
     def init_driver(self):
         """Initialize Firefox driver with appropriate options"""
         try:
+            print("Setting up Firefox options...")
             firefox_options = Options()
             firefox_options.add_argument('--headless')
             firefox_options.add_argument('--width=1920')
             firefox_options.add_argument('--height=1080')
+            firefox_options.add_argument('--disable-gpu')
+            firefox_options.add_argument('--no-sandbox')
+            firefox_options.add_argument('--disable-dev-shm-usage')
+            firefox_options.set_preference("dom.webdriver.enabled", False)
+            firefox_options.set_preference('useAutomationExtension', False)
             
-            # Initialize the driver
+            print("Installing GeckoDriver...")
+            service = Service(GeckoDriverManager().install())
+            
+            print("Initializing Firefox driver...")
+            # self.driver = webdriver.Firefox(service=service, options=firefox_options)
             self.driver = webdriver.Firefox(options=firefox_options)
-            
-            # Set page load timeout
+            # Set various timeouts
+            print("Configuring timeouts...")
             self.driver.set_page_load_timeout(30)
+            self.driver.implicitly_wait(10)
             
+            print("Firefox driver initialized successfully!")
             return True
             
         except Exception as e:
             print(f"Failed to initialize Firefox driver: {str(e)}")
+            print("Error details:", str(e.__class__.__name__))
+            import traceback
+            print("Traceback:", traceback.format_exc())
+            
             if hasattr(self, 'driver') and self.driver:
                 try:
                     self.driver.quit()
@@ -105,64 +121,237 @@ class TwitterScraper:
             
         try:
             print("Navigating to Twitter login page...")
-            self.driver.get('https://twitter.com/login')
-            time.sleep(3)  # Increased wait time
+            self.driver.get('https://x.com/login')
+            time.sleep(5)  # Increased wait for initial page load
             
             print("Entering username...")
-            username_input = WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((By.NAME, "text"))
-            )
+            # Try multiple possible selectors for username field
+            username_selectors = [
+                "input[autocomplete='username']",
+                "input[name='text']",
+                "input[autocomplete='email']"
+            ]
+            
+            username_input = None
+            for selector in username_selectors:
+                try:
+                    username_input = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                    if username_input.is_displayed():
+                        break
+                except:
+                    continue
+            
+            if not username_input:
+                raise Exception("Could not find username input field")
+                
             username_input.clear()
             username_input.send_keys(username)
-            time.sleep(1)
-            
-            print("Clicking Next button...")
-            next_button = WebDriverWait(self.driver, 15).until(
-                EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Next')]"))
-            )
-            next_button.click()
             time.sleep(2)
             
+            print("Clicking Next button...")
+            # Try multiple possible selectors for next button
+            next_button_selectors = [
+                "//div[@role='button'][.//span[text()='Next']]",
+                "//span[text()='Next']/..",
+                "//div[contains(@class, 'next')]"
+            ]
+            
+            next_button = None
+            for selector in next_button_selectors:
+                try:
+                    next_button = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    if next_button.is_displayed():
+                        break
+                except:
+                    continue
+            
+            if not next_button:
+                raise Exception("Could not find next button")
+                
+            next_button.click()
+            time.sleep(3)
+            
+            # Check if email verification is requested
+            try:
+                email_input = None
+                email_selectors = [
+                    "input[autocomplete='email']",
+                    "input[name='text']",
+                    "input[type='text']"
+                ]
+                
+                for selector in email_selectors:
+                    try:
+                        email_input = WebDriverWait(self.driver, 3).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                        )
+                        if email_input.is_displayed():
+                            break
+                    except:
+                        continue
+                
+                if email_input:
+                    print("Email verification requested...")
+                    if not email:
+                        raise Exception("Email verification required but no email provided")
+                    
+                    email_input.clear()
+                    email_input.send_keys(email)
+                    time.sleep(1)
+                    
+                    # Click next after entering email
+                    next_button = None
+                    for selector in next_button_selectors:
+                        try:
+                            next_button = WebDriverWait(self.driver, 5).until(
+                                EC.element_to_be_clickable((By.XPATH, selector))
+                            )
+                            if next_button.is_displayed():
+                                break
+                        except:
+                            continue
+                    
+                    if next_button:
+                        next_button.click()
+                        time.sleep(3)
+                    else:
+                        raise Exception("Could not find next button after email input")
+            except Exception as e:
+                if "Email verification required" in str(e):
+                    raise
+                # If no email verification needed, continue to password
+                pass
+            
             print("Entering password...")
-            password_input = WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((By.NAME, "password"))
-            )
+            # Try multiple possible selectors for password field
+            password_selectors = [
+                "input[autocomplete='current-password']",
+                "input[name='password']",
+                "input[type='password']"
+            ]
+            
+            password_input = None
+            for selector in password_selectors:
+                try:
+                    password_input = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                    if password_input.is_displayed():
+                        break
+                except:
+                    continue
+            
+            if not password_input:
+                # Take a screenshot and save page source for debugging
+                self.driver.save_screenshot('password_field_error.png')
+                with open('password_field_debug.html', 'w', encoding='utf-8') as f:
+                    f.write(self.driver.page_source)
+                raise Exception("Could not find password input field")
+                
             password_input.clear()
             password_input.send_keys(password)
-            time.sleep(1)
+            time.sleep(2)
             
             print("Clicking Login button...")
-            login_button = WebDriverWait(self.driver, 15).until(
-                EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Log in')]"))
-            )
+            # Try multiple possible selectors for login button
+            login_button_selectors = [
+                "//div[@role='button'][.//span[text()='Log in']]",
+                "//span[text()='Log in']/..",
+                "//div[contains(@data-testid, 'LoginButton')]"
+            ]
+            
+            login_button = None
+            for selector in login_button_selectors:
+                try:
+                    login_button = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    if login_button.is_displayed():
+                        break
+                except:
+                    continue
+            
+            if not login_button:
+                raise Exception("Could not find login button")
+                
             login_button.click()
-            time.sleep(3)
+            time.sleep(5)  # Increased wait after login
             
             # Check if 2FA is requested
             try:
-                twofa_input = WebDriverWait(self.driver, 5).until(
-                    EC.presence_of_element_located((By.NAME, "code"))
-                )
+                twofa_selectors = [
+                    "input[autocomplete='one-time-code']",
+                    "input[name='text']",
+                    "input[inputmode='numeric']"
+                ]
+                
+                twofa_input = None
+                for selector in twofa_selectors:
+                    try:
+                        twofa_input = WebDriverWait(self.driver, 3).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                        )
+                        if twofa_input.is_displayed():
+                            break
+                    except:
+                        continue
+                
                 if twofa_input and twofa_secret:
                     print("Handling 2FA...")
                     code = self._generate_2fa_code(twofa_secret)
                     twofa_input.clear()
                     twofa_input.send_keys(code)
-                    time.sleep(1)
-                    
-                    verify_button = WebDriverWait(self.driver, 15).until(
-                        EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Verify')]"))
-                    )
-                    verify_button.click()
                     time.sleep(2)
+                    
+                    verify_button_selectors = [
+                        "//div[@role='button'][.//span[text()='Verify']]",
+                        "//span[text()='Verify']/..",
+                        "//div[contains(@data-testid, 'VerifyButton')]"
+                    ]
+                    
+                    verify_button = None
+                    for selector in verify_button_selectors:
+                        try:
+                            verify_button = WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((By.XPATH, selector))
+                            )
+                            if verify_button.is_displayed():
+                                break
+                        except:
+                            continue
+                    
+                    if verify_button:
+                        verify_button.click()
+                        time.sleep(3)
             except:
                 # 2FA not requested, continue with login
                 pass
             
             print("Waiting for successful login...")
-            WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='primaryColumn']"))
-            )
+            # Try multiple success indicators
+            success_selectors = [
+                "div[data-testid='primaryColumn']",
+                "div[data-testid='AppTabBar_Home_Link']",
+                "a[aria-label='Home']"
+            ]
+            
+            success_element = None
+            for selector in success_selectors:
+                try:
+                    success_element = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                    if success_element.is_displayed():
+                        break
+                except:
+                    continue
+            
+            if not success_element:
+                raise Exception("Could not verify successful login")
             
             print("Login successful!")
             self.cookies = self.driver.get_cookies()
@@ -171,9 +360,14 @@ class TwitterScraper:
         except Exception as e:
             print(f"Login failed with error: {str(e)}")
             print("Current URL:", self.driver.current_url)
-            print("Page source:", self.driver.page_source[:500])  # Print first 500 chars of page source
+            print("Page source:", self.driver.page_source[:1000])  # Print more of the page source
             if self.driver:
                 self.driver.save_screenshot('login_error.png')
+                # Save extended debug info
+                with open('login_debug.txt', 'w') as f:
+                    f.write(f"Error: {str(e)}\n")
+                    f.write(f"URL: {self.driver.current_url}\n")
+                    f.write(f"Page source:\n{self.driver.page_source}")
             return False
 
     async def is_logged_in(self):
@@ -190,7 +384,7 @@ class TwitterScraper:
         except:
             return False
 
-    async def search_tweets(self, query, max_results=100):
+    async def search_tweets(self, query, max_results=100, progress_callback=None):
         """Search for tweets matching query"""
         tweets = []
         print(f"\nSearching Twitter for: {query}")
@@ -264,6 +458,8 @@ class TwitterScraper:
             print(f"Error searching tweets: {str(e)}")
             
         print(f"\nTotal tweets collected: {len(tweets)}")
+        if tweets:
+            progress_callback(f"Collected {len(tweets)} tweets from the past {max_results} hours")
         return tweets
 
 class DataCollector:
@@ -275,20 +471,50 @@ class DataCollector:
         """Initialize the Twitter scraper with login"""
         username = os.getenv('TWITTER_USERNAME')
         password = os.getenv('TWITTER_PASSWORD')
+        email = os.getenv('TWITTER_EMAIL')  # Add email from env
         twofa_secret = os.getenv('TWITTER_2FA_SECRET')
         
         if not username or not password:
             raise ValueError("Twitter credentials not configured")
             
-        success = await self.twitter_scraper.login(username, password, twofa_secret=twofa_secret)
+        if not email:
+            print("Warning: TWITTER_EMAIL not set in .env file. This might be required for login.")
+            
+        success = await self.twitter_scraper.login(
+            username=username,
+            password=password,
+            email=email,
+            twofa_secret=twofa_secret
+        )
         if not success:
             raise Exception("Failed to login to Twitter")
         
-    async def get_twitter_data(self, ticker, hours_back=24):
-        """Collect Twitter data for a specific crypto ticker"""
+    async def get_twitter_data(self, ticker, hours_back=24, max_tweets=50, progress_callback=None):
+        """
+        Collect Twitter data for a specific crypto ticker
+        
+        Args:
+            ticker (str): The cryptocurrency ticker to analyze
+            hours_back (int): Number of hours of historical data to analyze
+            max_tweets (int): Maximum number of tweets to collect (10-100)
+            progress_callback (callable): Function to call with progress updates
+        """
+        if progress_callback is None:
+            progress_callback = lambda x: None
+            
         print(f"\nCollecting Twitter data for {ticker} from past {hours_back} hours")
+        
+        # Enhanced search query:
+        # - Include both $ and # versions of the ticker
+        # - Filter out retweets and replies
+        # - Only English tweets
+        # - Only from verified accounts or accounts with min_followers
+        ticker_clean = ticker.replace('$', '').replace('#', '')
+        # search_query = f"(${ticker_clean} OR #{ticker_clean}) min_followers:1000 -is:retweet -is:reply lang:en"
         search_query = f"{ticker} -is:retweet lang:en"
-        tweets = await self.twitter_scraper.search_tweets(search_query, max_results=50)  # Reduced from 100
+        print(f"Using search query: {search_query}")
+        
+        tweets = await self.twitter_scraper.search_tweets(search_query, max_results=max_tweets, progress_callback=progress_callback)
         
         # Filter tweets by time
         cutoff_time = datetime.utcnow().replace(tzinfo=None)
@@ -298,13 +524,26 @@ class DataCollector:
         ]
         
         print(f"Found {len(filtered_tweets)} tweets within time range")
+        if filtered_tweets:
+            progress_callback(f"Collected {len(filtered_tweets)} tweets from the past {hours_back} hours")
+        
         return pd.DataFrame(filtered_tweets)
     
-    async def aggregate_data(self, ticker, hours_back=24):
-        """Aggregate Twitter data for analysis"""
-        print(f"\nAggregating data for {ticker}")
-        twitter_data = await self.get_twitter_data(ticker, hours_back)
+    async def aggregate_data(self, ticker, hours_back=24, max_tweets=50, progress_callback=None):
+        """
+        Aggregate Twitter data for analysis
         
+        Args:
+            ticker (str): The cryptocurrency ticker to analyze
+            hours_back (int): Number of hours of historical data to analyze
+            max_tweets (int): Maximum number of tweets to collect (10-100)
+            progress_callback (callable): Function to call with progress updates
+        """
+        if progress_callback is None:
+            progress_callback = lambda x: None
+            
+        print(f"\nAggregating data for {ticker}")
+        twitter_data = await self.get_twitter_data(ticker, hours_back, max_tweets)
         all_texts = []
         
         # Process Twitter data
@@ -316,9 +555,11 @@ class DataCollector:
                                         twitter_data['replies'])
             twitter_data = twitter_data.sort_values('engagement', ascending=False)
             
-            # Get top 15 most engaged tweets
-            top_tweets = twitter_data.head(15)  # Reduced from 20
+            # Get top tweets by engagement
+            top_tweet_count = max(10, min(max_tweets // 3, 15))
+            top_tweets = twitter_data.head(top_tweet_count)
             print(f"Selected top {len(top_tweets)} tweets by engagement")
+            progress_callback(f"Selected top {len(top_tweets)} most engaged tweets for analysis")
             
             all_texts.extend([{
                 'text': text,
