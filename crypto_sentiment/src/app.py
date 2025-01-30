@@ -89,8 +89,6 @@ st.set_page_config(
 def get_analyzer():
     try:
         analyzer = SentimentAnalyzer()
-        # Initialize Twitter functionality
-        asyncio.run(analyzer.init())
         return analyzer
     except Exception as e:
         st.error(f"Failed to initialize the analyzer: {str(e)}")
@@ -123,7 +121,7 @@ if st.sidebar.button("Test OpenRouter API"):
 
 if analysis_type == "Crypto Ticker Analysis":
     st.subheader("Crypto Ticker Analysis")
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
         ticker = st.text_input(
@@ -139,6 +137,15 @@ if analysis_type == "Crypto Ticker Analysis":
             value=24
         )
     
+    with col3:
+        max_tweets = st.number_input(
+            "Maximum Tweets",
+            min_value=10,
+            max_value=100,
+            value=50,
+            help="Maximum number of tweets to analyze (10-100)"
+        )
+    
     if st.button("Analyze Ticker"):
         status_placeholder = st.empty()
         result_placeholder = st.empty()
@@ -146,10 +153,23 @@ if analysis_type == "Crypto Ticker Analysis":
         with st.spinner(""):
             try:
                 # Show initial status
-                status_placeholder.info("🔄 Starting analysis...")
+                status_placeholder.info("🔄 Starting analysis for " + ticker)
                 
-                # Get the analysis result
-                result = asyncio.run(analyzer.analyze_crypto_ticker(ticker, hours))
+                # Initialize Twitter functionality only when needed
+                try:
+                    status_placeholder.info("🔄 Initializing Twitter connection...")
+                    asyncio.run(analyzer.init())
+                except Exception as e:
+                    status_placeholder.error("❌ Failed to connect to Twitter. Please check your credentials.")
+                    st.error(f"Technical details: {str(e)}")
+                    st.stop()
+                
+                # Create a progress message function
+                def update_progress(message):
+                    status_placeholder.info(f"🔄 {message}")
+                
+                # Get the analysis result with progress updates
+                result = asyncio.run(analyzer.analyze_crypto_ticker(ticker, hours, max_tweets, update_progress))
                 
                 if 'error' in result:
                     status_placeholder.error(f"""
