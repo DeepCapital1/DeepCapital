@@ -2,6 +2,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from sentiment_analyzer import SentimentAnalyzer
+from pattern_detector import PatternDetector
 import pandas as pd
 from datetime import datetime, timedelta
 import asyncio
@@ -9,6 +10,7 @@ from functools import wraps
 import requests
 import os
 from dotenv import load_dotenv
+import json
 
 def async_to_sync(f):
     """Convert async function to sync function"""
@@ -111,7 +113,7 @@ to provide detailed sentiment analysis and market insights.
 st.sidebar.header("Analysis Options")
 analysis_type = st.sidebar.selectbox(
     "Choose Analysis Type",
-    ["Crypto Ticker Analysis", "Single Text Analysis", "Multiple Sources Analysis"]
+    ["Crypto Ticker Analysis", "Technical Analysis", "Single Text Analysis", "Multiple Sources Analysis"]
 )
 
 # Add test button in sidebar
@@ -245,6 +247,113 @@ if analysis_type == "Crypto Ticker Analysis":
                 - Service maintenance
                 """)
                 st.error(f"Technical details: {str(e)}")
+
+elif analysis_type == "Technical Analysis":
+    st.subheader("Technical Analysis")
+    
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        symbol = st.text_input(
+            "Enter Symbol (e.g., BTC-USD)",
+            value="BTC-USD",
+            help="Enter a valid trading symbol (e.g., BTC-USD, ETH-USD)"
+        )
+    
+    with col2:
+        interval = st.selectbox(
+            "Select Timeframe",
+            options=['1d', '1h', '15m', '5m'],
+            index=0,
+            help="Select the timeframe for analysis"
+        )
+    
+    with col3:
+        period = st.selectbox(
+            "Select Period",
+            options=['1mo', '3mo', '6mo', '1y'],
+            index=1,
+            help="Select the historical data period"
+        )
+    
+    if st.button("Analyze"):
+        with st.spinner("Analyzing price patterns..."):
+            try:
+                # Initialize pattern detector
+                detector = PatternDetector()
+                
+                # Fetch data
+                df = detector.fetch_data(symbol, interval, period)
+                
+                if df is not None and not df.empty:
+                    # Add technical indicators
+                    df = detector.add_technical_indicators(df)
+                    
+                    # Get AI analysis
+                    analysis = detector.detect_patterns(df)
+                    
+                    # Create two columns for display
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col1:
+                        st.subheader("Price Chart with Technical Indicators")
+                        fig = detector.plot_pattern(df, analysis)
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        st.subheader("DeepSeek AI Analysis")
+                        
+                        # Pattern Analysis
+                        with st.expander("🎯 Pattern Analysis", expanded=True):
+                            if analysis['patterns']:
+                                pattern_data = json.loads(analysis['patterns'])
+                                st.write("**Detected Patterns:**")
+                                for pattern in pattern_data.get('patterns', []):
+                                    st.write(f"- {pattern}")
+                                st.write(f"**Quality Score:** {pattern_data.get('quality_score', 'N/A')}/10")
+                                st.write(f"**Completion:** {pattern_data.get('completion', 'N/A')}%")
+                        
+                        # Market Regime
+                        with st.expander("🌊 Market Regime", expanded=True):
+                            if analysis['market_regime']:
+                                regime_data = json.loads(analysis['market_regime'])
+                                st.write(f"**Current Regime:** {regime_data.get('regime', 'Unknown')}")
+                                st.write(f"**Confidence:** {regime_data.get('confidence', 'N/A')}%")
+                                st.write("**Characteristics:**")
+                                for char in regime_data.get('characteristics', []):
+                                    st.write(f"- {char}")
+                        
+                        # Price Prediction
+                        with st.expander("🎯 Price Prediction", expanded=True):
+                            if analysis['price_prediction']:
+                                pred_data = json.loads(analysis['price_prediction'])
+                                st.write(f"**Target (24h):** {pred_data.get('price_target', 'N/A')}")
+                                st.write(f"**Confidence:** {pred_data.get('confidence', 'N/A')}%")
+                                st.write("**Key Factors:**")
+                                for factor in pred_data.get('key_factors', []):
+                                    st.write(f"- {factor}")
+                                st.write("**Risk Factors:**")
+                                for risk in pred_data.get('risk_factors', []):
+                                    st.write(f"- {risk}")
+                        
+                        # Support/Resistance
+                        with st.expander("📊 Support & Resistance", expanded=True):
+                            if analysis['support_resistance']:
+                                sr_data = json.loads(analysis['support_resistance'])
+                                st.write("**Support Levels:**")
+                                for level in sr_data.get('support_levels', []):
+                                    st.write(f"- Price: {level['price']}, Strength: {level['strength']}/10")
+                                st.write("**Resistance Levels:**")
+                                for level in sr_data.get('resistance_levels', []):
+                                    st.write(f"- Price: {level['price']}, Strength: {level['strength']}/10")
+                        
+                        # Timestamp
+                        st.caption(f"Last updated: {datetime.fromisoformat(analysis['timestamp']).strftime('%Y-%m-%d %H:%M:%S')}")
+                else:
+                    st.error("Error fetching data. Please check the symbol and try again.")
+                    
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
 
 elif analysis_type == "Single Text Analysis":
     # Single text analysis

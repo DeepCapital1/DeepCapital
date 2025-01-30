@@ -1,214 +1,189 @@
-def _get_market_regime(self, df):
-        """Detect current market regime using AI"""
-        print("\nMaking API call for market regime analysis...")
+import os
+import json
+import requests
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import yfinance as yf
+import pandas_ta as ta
+from dotenv import load_dotenv
+import plotly.graph_objects as go
+from sklearn.preprocessing import MinMaxScaler
+
+class PatternDetector:
+    def __init__(self):
+        print("\n=== Initializing Pattern Detector ===")
+        load_dotenv()
+        self.api_key = os.getenv('OPENROUTER_API_KEY')
         
-        # Calculate additional technical indicators for context
-        last_close = df['Close'].iloc[-1]
-        sma_20 = df['Close'].rolling(window=20).mean().iloc[-1]
-        sma_50 = df['Close'].rolling(window=50).mean().iloc[-1]
-        vol_change = df['Volume'].pct_change().tail(5).mean()
-        price_change = df['Close'].pct_change().tail(5).mean()
-        
-        prompt = f"""Analyze the following market data and return a JSON response describing the market regime:
-
-Technical Data:
-- Current Price: {last_close:.2f}
-- RSI: {df['RSI'].iloc[-1]:.2f}
-- MACD: {df['MACD_12_26_9'].iloc[-1]:.2f}
-- 20 SMA: {sma_20:.2f}
-- 50 SMA: {sma_50:.2f}
-- 5-day Volume Change: {vol_change:.2%}
-- 5-day Price Change: {price_change:.2%}
-
-Return ONLY a valid JSON object in this exact format:
-{{
-    "regime": "string",
-    "confidence": number,
-    "characteristics": ["string"],
-    "trend_strength": number,
-    "volatility_regime": "string"
-}}"""
-
-        try:
-            print("Sending request to OpenRouter API...")
-            response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=self.headers,
-                json={
-                    "model": "deepseek/deepseek-r1-distill-llama-70b",
-                    "messages": [
-                        {"role": "system", "content": "You are a market analysis AI. Respond only with valid JSON objects. For regime, use one of: ['Trending Up', 'Trending Down', 'Ranging', 'Accumulation', 'Distribution']. For volatility_regime use one of: ['Low', 'Moderate', 'High']."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 150
-                }
-            )
+        if not self.api_key:
+            print("❌ Error: OpenRouter API key not found!")
+            raise ValueError("OpenRouter API key not found in environment variables")
+        else:
+            print("✅ API Key loaded successfully")
             
-            print(f"API Response Status: {response.status_code}")
-            if response.status_code == 200:
-                try:
-                    result = response.json()
-                    print("Full API Response:", result)
-                    
-                    if 'choices' in result and len(result['choices']) > 0:
-                        content = result['choices'][0]['message']['content'].strip()
-                        print("Raw Content:", content)
-                        
-                        # Try to clean the content if it has markdown code blocks
-                        if content.startswith("```json"):
-                            content = content.replace("```json", "").replace("```", "").strip()
-                        elif content.startswith("```"):
-                            content = content.replace("```", "").strip()
-                        
-                        json_content = json.loads(content)
-                        required_fields = ['regime', 'confidence', 'characteristics', 'trend_strength', 'volatility_regime']
-                        if all(field in json_content for field in required_fields):
-                            print("✅ Market regime analysis received and validated")
-                            print(f"Detected regime: {json_content['regime']} with {json_content['confidence']}% confidence")
-                            return json.dumps(json_content)
-                        else:
-                            raise ValueError("Missing required fields in JSON response")
-                    else:
-                        raise ValueError("No choices in API response")
-                except Exception as e:
-                    print(f"❌ Error processing API response: {str(e)}")
-                    print("Raw response content:", content if 'content' in locals() else "No content")
-                    return json.dumps({
-                        "regime": "Unknown",
-                        "confidence": 0,
-                        "characteristics": ["Analysis failed - invalid response format"],
-                        "trend_strength": 0,
-                        "volatility_regime": "Unknown"
-                    })
-            else:
-                print(f"❌ API request failed: {response.text}")
-                return json.dumps({
-                    "regime": "Unknown",
-                    "confidence": 0,
-                    "characteristics": ["Analysis failed - API error"],
-                    "trend_strength": 0,
-                    "volatility_regime": "Unknown"
-                })
+        self.headers = {
+            'Authorization': f'Bearer {self.api_key}',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'http://localhost:8501',
+            'X-Title': 'Technical Analysis Pattern Detector'
+        }
+        print("✅ Headers configured")
+        
+        # Initialize technical indicators
+        self.indicators = {
+            'RSI': {'timeperiod': 14},
+            'MACD': {'fastperiod': 12, 'slowperiod': 26, 'signalperiod': 9},
+            'BB': {'timeperiod': 20, 'nbdevup': 2, 'nbdevdn': 2},
+            'ATR': {'timeperiod': 14}
+        }
+        print("✅ Technical indicators initialized")
+        print("=== Initialization Complete ===\n")
+
+    def fetch_data(self, symbol, interval='1d', period='6mo'):
+        """Fetch historical price data"""
+        print(f"\n=== Fetching Data for {symbol} ===")
+        print(f"Timeframe: {interval}, Period: {period}")
+        try:
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period=period, interval=interval)
+            print(f"✅ Data fetched successfully: {len(df)} periods")
+            return df
         except Exception as e:
-            print(f"❌ Error in market regime analysis: {str(e)}")
-            return json.dumps({
+            print(f"❌ Error fetching data: {str(e)}")
+            return None
+
+    def add_technical_indicators(self, df):
+        """Add technical indicators to the dataframe"""
+        try:
+            # Create a copy of the dataframe
+            df = df.copy()
+            
+            # Fill NaN values in price data first
+            df['Close'] = df['Close'].ffill()
+            df['High'] = df['High'].fillna(df['Close'])
+            df['Low'] = df['Low'].fillna(df['Close'])
+            df['Open'] = df['Open'].fillna(df['Close'])
+            df['Volume'] = df['Volume'].fillna(0)
+            
+            print("Initial columns:", df.columns.tolist())
+            
+            # Add RSI
+            from ta.momentum import RSIIndicator
+            rsi = RSIIndicator(close=df['Close'], window=self.indicators['RSI']['timeperiod'])
+            df['RSI'] = rsi.rsi()
+            print("After RSI:", df.columns.tolist())
+            
+            # Add MACD
+            from ta.trend import MACD
+            macd = MACD(close=df['Close'],
+                       window_slow=self.indicators['MACD']['slowperiod'],
+                       window_fast=self.indicators['MACD']['fastperiod'],
+                       window_sign=self.indicators['MACD']['signalperiod'])
+            df['MACD_12_26_9'] = macd.macd()
+            df['MACDs_12_26_9'] = macd.macd_signal()
+            df['MACDh_12_26_9'] = macd.macd_diff()
+            print("After MACD:", df.columns.tolist())
+            
+            # Add Bollinger Bands
+            from ta.volatility import BollingerBands
+            bb = BollingerBands(close=df['Close'],
+                               window=self.indicators['BB']['timeperiod'],
+                               window_dev=self.indicators['BB']['nbdevup'])
+            df['BBU_20_2.0'] = bb.bollinger_hband()
+            df['BBM_20_2.0'] = bb.bollinger_mavg()
+            df['BBL_20_2.0'] = bb.bollinger_lband()
+            print("After BB:", df.columns.tolist())
+            
+            # Add ATR
+            from ta.volatility import AverageTrueRange
+            atr = AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close'],
+                                  window=self.indicators['ATR']['timeperiod'])
+            df['ATR'] = atr.average_true_range()
+            print("After ATR:", df.columns.tolist())
+            
+            # Calculate Returns and Volatility
+            df['Returns'] = df['Close'].pct_change()
+            df['Volatility'] = df['Returns'].rolling(5).std()
+            
+            # Fill any remaining NaN values
+            df = df.ffill().bfill()
+            
+            print("Final columns:", df.columns.tolist())
+            return df
+        except Exception as e:
+            print(f"Error adding indicators: {str(e)}")
+            print("DataFrame head:", df.head())
+            print("DataFrame info:", df.info())
+            return df
+
+    def detect_patterns(self, df, lookback=30):
+        """Detect patterns in the price action using DeepSeek AI"""
+        print("\n=== Starting Pattern Detection ===")
+        try:
+            recent_data = df.tail(lookback).copy()
+            print(f"Analyzing last {lookback} periods")
+            
+            print("\n1. Getting Pattern Analysis...")
+            pattern_analysis = self._get_pattern_analysis(recent_data)
+            
+            print("\n2. Getting Market Regime Analysis...")
+            regime_analysis = self._get_market_regime(recent_data)
+            
+            print("\n3. Getting Price Prediction...")
+            price_prediction = self._get_price_prediction(recent_data)
+            
+            print("\n4. Getting Support/Resistance Levels...")
+            support_resistance = self._get_support_resistance(recent_data)
+            
+            print("\nPreparing response...")
+            # Initialize default values for each analysis type
+            default_pattern = json.dumps({
+                "patterns": [],
+                "quality_score": "N/A",
+                "completion": "N/A"
+            })
+            
+            default_regime = json.dumps({
                 "regime": "Unknown",
-                "confidence": 0,
-                "characteristics": ["Analysis failed - system error"],
-                "trend_strength": 0,
-                "volatility_regime": "Unknown"
+                "confidence": "N/A",
+                "characteristics": []
             })
-
-def _get_price_prediction(self, df):
-        """Get AI-powered price predictions"""
-        print("\nMaking API call for price prediction...")
-        
-        current_price = df['Close'].iloc[-1]
-        bb_width = (df['BBU_20_2.0'] - df['BBL_20_2.0']) / df['BBM_20_2.0']
-        bb_position = (current_price - df['BBL_20_2.0']) / (df['BBU_20_2.0'] - df['BBL_20_2.0'])
-        
-        prompt = f"""Analyze the following market data and return a JSON response with price predictions:
-
-Technical Data:
-- Current Price: {current_price:.2f}
-- RSI: {df['RSI'].iloc[-1]:.2f}
-- MACD: {df['MACD_12_26_9'].iloc[-1]:.2f}
-- MACD Signal: {df['MACDs_12_26_9'].iloc[-1]:.2f}
-- BB Width: {bb_width.iloc[-1]:.4f}
-- BB Position: {bb_position.iloc[-1]:.4f}
-- ATR: {df['ATR'].iloc[-1]:.2f}
-- Volatility: {df['Volatility'].iloc[-1]:.4f}
-
-Return ONLY a valid JSON object in this exact format:
-{{
-    "price_target": number,
-    "confidence": number,
-    "timeframe": "string",
-    "key_factors": ["string"],
-    "risk_factors": ["string"],
-    "support_level": number,
-    "resistance_level": number
-}}"""
-
-        try:
-            print("Sending request to OpenRouter API...")
-            response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=self.headers,
-                json={
-                    "model": "deepseek/deepseek-r1-distill-llama-70b",
-                    "messages": [
-                        {"role": "system", "content": "You are a market analysis AI. Respond only with valid JSON objects. For timeframe use one of: ['Short-term (1-3 days)', 'Medium-term (1-2 weeks)', 'Long-term (1+ month)']. Price targets should be within ±15% of current price."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 250
-                }
-            )
             
-            print(f"API Response Status: {response.status_code}")
-            if response.status_code == 200:
-                try:
-                    result = response.json()
-                    print("Full API Response:", result)
-                    
-                    if 'choices' in result and len(result['choices']) > 0:
-                        content = result['choices'][0]['message']['content'].strip()
-                        print("Raw Content:", content)
-                        
-                        # Try to clean the content if it has markdown code blocks
-                        if content.startswith("```json"):
-                            content = content.replace("```json", "").replace("```", "").strip()
-                        elif content.startswith("```"):
-                            content = content.replace("```", "").strip()
-                        
-                        json_content = json.loads(content)
-                        required_fields = ['price_target', 'confidence', 'timeframe', 'key_factors', 'risk_factors', 'support_level', 'resistance_level']
-                        if all(field in json_content for field in required_fields):
-                            print("✅ Price prediction received and validated")
-                            print(f"Price target: {json_content['price_target']} ({json_content['timeframe']}) with {json_content['confidence']}% confidence")
-                            return json.dumps(json_content)
-                        else:
-                            raise ValueError("Missing required fields in JSON response")
-                    else:
-                        raise ValueError("No choices in API response")
-                except Exception as e:
-                    print(f"❌ Error processing API response: {str(e)}")
-                    print("Raw response content:", content if 'content' in locals() else "No content")
-                    return json.dumps({
-                        "price_target": current_price,
-                        "confidence": 0,
-                        "timeframe": "Unknown",
-                        "key_factors": ["Analysis failed - invalid response format"],
-                        "risk_factors": ["Unable to determine risks"],
-                        "support_level": current_price * 0.95,
-                        "resistance_level": current_price * 1.05
-                    })
-            else:
-                print(f"❌ API request failed: {response.text}")
-                return json.dumps({
-                    "price_target": current_price,
-                    "confidence": 0,
-                    "timeframe": "Unknown",
-                    "key_factors": ["Analysis failed - API error"],
-                    "risk_factors": ["Unable to determine risks"],
-                    "support_level": current_price * 0.95,
-                    "resistance_level": current_price * 1.05
-                })
-        except Exception as e:
-            print(f"❌ Error in price prediction: {str(e)}")
-            return json.dumps({
-                "price_target": current_price,
-                "confidence": 0,
-                "timeframe": "Unknown",
-                "key_factors": ["Analysis failed - system error"],
-                "risk_factors": ["Unable to determine risks"],
-                "support_level": current_price * 0.95,
-                "resistance_level": current_price * 1.05
+            default_prediction = json.dumps({
+                "price_target": "N/A",
+                "confidence": "N/A",
+                "key_factors": [],
+                "risk_factors": []
             })
+            
+            default_sr = json.dumps({
+                "support_levels": [],
+                "resistance_levels": []
+            })
+            
+            combined_analysis = {
+                'patterns': pattern_analysis if pattern_analysis else default_pattern,
+                'market_regime': regime_analysis if regime_analysis else default_regime,
+                'price_prediction': price_prediction if price_prediction else default_prediction,
+                'support_resistance': support_resistance if support_resistance else default_sr,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            print("✅ Analysis complete")
+            return combined_analysis
+            
+        except Exception as e:
+            print(f"❌ Error in pattern detection: {str(e)}")
+            return {
+                'patterns': json.dumps({"error": str(e), "patterns": [], "quality_score": "N/A", "completion": "N/A"}),
+                'market_regime': json.dumps({"error": str(e), "regime": "Unknown", "confidence": "N/A", "characteristics": []}),
+                'price_prediction': json.dumps({"error": str(e), "price_target": "N/A", "confidence": "N/A", "key_factors": [], "risk_factors": []}),
+                'support_resistance': json.dumps({"error": str(e), "support_levels": [], "resistance_levels": []}),
+                'timestamp': datetime.now().isoformat()
+            }
 
-def _get_pattern_analysis(self, df):
+    def _get_pattern_analysis(self, df):
         """Get AI-powered pattern analysis"""
         print("\nMaking API call for pattern analysis...")
         
@@ -316,7 +291,335 @@ Return ONLY a valid JSON object in this exact format:
                 "key_levels": []
             })
 
-def _get_sentiment_analysis(self, df):
+    def plot_pattern(self, df, pattern_info):
+        """Create an interactive plot with pattern annotations"""
+        print("\n=== Generating Plot ===")
+        try:
+            fig = go.Figure()
+            
+            print("Adding candlestick chart...")
+            fig.add_trace(go.Candlestick(
+                x=df.index,
+                open=df['Open'],
+                high=df['High'],
+                low=df['Low'],
+                close=df['Close'],
+                name='Price'
+            ))
+            
+            print("Adding Bollinger Bands...")
+            # Add upper band
+            fig.add_trace(go.Scatter(
+                x=df.index,
+                y=df['BBU_20_2.0'],
+                name='BB Upper',
+                line=dict(color='rgba(250, 250, 250, 0.3)', dash='dash')
+            ))
+            
+            # Add middle band
+            fig.add_trace(go.Scatter(
+                x=df.index,
+                y=df['BBM_20_2.0'],
+                name='BB Middle',
+                line=dict(color='rgba(250, 250, 250, 0.2)')
+            ))
+            
+            # Add lower band
+            fig.add_trace(go.Scatter(
+                x=df.index,
+                y=df['BBL_20_2.0'],
+                name='BB Lower',
+                line=dict(color='rgba(250, 250, 250, 0.3)', dash='dash'),
+                fill='tonexty'
+            ))
+            
+            print("Adding support and resistance levels...")
+            if pattern_info and 'support_resistance' in pattern_info:
+                try:
+                    sr_data = json.loads(pattern_info['support_resistance'])
+                    print("Support/Resistance data:", sr_data)
+                    
+                    # Add support levels
+                    support_levels = sr_data.get('support_levels', [])
+                    if isinstance(support_levels, list):
+                        for level in support_levels:
+                            if isinstance(level, dict) and 'price' in level:
+                                try:
+                                    price = float(level['price'])
+                                    strength = level.get('strength', 'N/A')
+                                    fig.add_hline(
+                                        y=price,
+                                        line=dict(color='rgba(0, 255, 0, 0.3)', dash='dash'),
+                                        annotation_text=f"Support {price:.2f} (Strength: {strength})"
+                                    )
+                                except (ValueError, TypeError) as e:
+                                    print(f"Error adding support level: {e}")
+                    
+                    # Add resistance levels
+                    resistance_levels = sr_data.get('resistance_levels', [])
+                    if isinstance(resistance_levels, list):
+                        for level in resistance_levels:
+                            if isinstance(level, dict) and 'price' in level:
+                                try:
+                                    price = float(level['price'])
+                                    strength = level.get('strength', 'N/A')
+                                    fig.add_hline(
+                                        y=price,
+                                        line=dict(color='rgba(255, 0, 0, 0.3)', dash='dash'),
+                                        annotation_text=f"Resistance {price:.2f} (Strength: {strength})"
+                                    )
+                                except (ValueError, TypeError) as e:
+                                    print(f"Error adding resistance level: {e}")
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing support/resistance data: {e}")
+            
+            print("Updating layout...")
+            fig.update_layout(
+                title='Price Action with Technical Patterns',
+                yaxis_title='Price',
+                xaxis_title='Date',
+                template='plotly_dark',
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                xaxis=dict(
+                    showgrid=True,
+                    gridwidth=1,
+                    gridcolor='rgba(128,128,128,0.1)',
+                ),
+                yaxis=dict(
+                    showgrid=True,
+                    gridwidth=1,
+                    gridcolor='rgba(128,128,128,0.1)',
+                ),
+                showlegend=True,
+                legend=dict(
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="left",
+                    x=0.01
+                )
+            )
+            
+            print("✅ Plot generated successfully")
+            return fig
+        except Exception as e:
+            print(f"❌ Error generating plot: {str(e)}")
+            print(f"Pattern info type: {type(pattern_info)}")
+            if pattern_info:
+                print(f"Pattern info content: {pattern_info}")
+            return None
+
+    def _get_market_regime(self, df):
+        """Detect current market regime using AI"""
+        print("\nMaking API call for market regime analysis...")
+        
+        # Calculate additional technical indicators for context
+        last_close = df['Close'].iloc[-1]
+        sma_20 = df['Close'].rolling(window=20).mean().iloc[-1]
+        sma_50 = df['Close'].rolling(window=50).mean().iloc[-1]
+        vol_change = df['Volume'].pct_change().tail(5).mean()
+        price_change = df['Close'].pct_change().tail(5).mean()
+        
+        prompt = f"""Analyze the following market data and return a JSON response describing the market regime:
+
+Technical Data:
+- Current Price: {last_close:.2f}
+- RSI: {df['RSI'].iloc[-1]:.2f}
+- MACD: {df['MACD_12_26_9'].iloc[-1]:.2f}
+- 20 SMA: {sma_20:.2f}
+- 50 SMA: {sma_50:.2f}
+- 5-day Volume Change: {vol_change:.2%}
+- 5-day Price Change: {price_change:.2%}
+
+Return ONLY a valid JSON object in this exact format:
+{{
+    "regime": "string",
+    "confidence": number,
+    "characteristics": ["string"],
+    "trend_strength": number,
+    "volatility_regime": "string"
+}}"""
+
+        try:
+            print("Sending request to OpenRouter API...")
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=self.headers,
+                json={
+                    "model": "deepseek/deepseek-r1-distill-llama-70b",
+                    "messages": [
+                        {"role": "system", "content": "You are a market analysis AI. Respond only with valid JSON objects. For regime, use one of: ['Trending Up', 'Trending Down', 'Ranging', 'Accumulation', 'Distribution']. For volatility_regime use one of: ['Low', 'Moderate', 'High']."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 150
+                }
+            )
+            
+            print(f"API Response Status: {response.status_code}")
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+                    print("Full API Response:", result)
+                    
+                    if 'choices' in result and len(result['choices']) > 0:
+                        content = result['choices'][0]['message']['content'].strip()
+                        print("Raw Content:", content)
+                        
+                        # Try to clean the content if it has markdown code blocks
+                        if content.startswith("```json"):
+                            content = content.replace("```json", "").replace("```", "").strip()
+                        elif content.startswith("```"):
+                            content = content.replace("```", "").strip()
+                        
+                        json_content = json.loads(content)
+                        required_fields = ['regime', 'confidence', 'characteristics', 'trend_strength', 'volatility_regime']
+                        if all(field in json_content for field in required_fields):
+                            print("✅ Market regime analysis received and validated")
+                            print(f"Detected regime: {json_content['regime']} with {json_content['confidence']}% confidence")
+                            return json.dumps(json_content)
+                        else:
+                            raise ValueError("Missing required fields in JSON response")
+                    else:
+                        raise ValueError("No choices in API response")
+                except Exception as e:
+                    print(f"❌ Error processing API response: {str(e)}")
+                    print("Raw response content:", content if 'content' in locals() else "No content")
+                    return json.dumps({
+                        "regime": "Unknown",
+                        "confidence": 0,
+                        "characteristics": ["Analysis failed - invalid response format"],
+                        "trend_strength": 0,
+                        "volatility_regime": "Unknown"
+                    })
+            else:
+                print(f"❌ API request failed: {response.text}")
+                return json.dumps({
+                    "regime": "Unknown",
+                    "confidence": 0,
+                    "characteristics": ["Analysis failed - API error"],
+                    "trend_strength": 0,
+                    "volatility_regime": "Unknown"
+                })
+        except Exception as e:
+            print(f"❌ Error in market regime analysis: {str(e)}")
+            return json.dumps({
+                "regime": "Unknown",
+                "confidence": 0,
+                "characteristics": ["Analysis failed - system error"],
+                "trend_strength": 0,
+                "volatility_regime": "Unknown"
+            })
+
+    def _get_price_prediction(self, df):
+        """Get AI-powered price predictions"""
+        print("\nMaking API call for price prediction...")
+        
+        current_price = df['Close'].iloc[-1]
+        bb_width = (df['BBU_20_2.0'] - df['BBL_20_2.0']) / df['BBM_20_2.0']
+        bb_position = (current_price - df['BBL_20_2.0']) / (df['BBU_20_2.0'] - df['BBL_20_2.0'])
+        
+        prompt = f"""Analyze the following market data and return a JSON response with price predictions:
+
+Technical Data:
+- Current Price: {current_price:.2f}
+- RSI: {df['RSI'].iloc[-1]:.2f}
+- MACD: {df['MACD_12_26_9'].iloc[-1]:.2f}
+- MACD Signal: {df['MACDs_12_26_9'].iloc[-1]:.2f}
+- BB Width: {bb_width.iloc[-1]:.4f}
+- BB Position: {bb_position.iloc[-1]:.4f}
+- ATR: {df['ATR'].iloc[-1]:.2f}
+- Volatility: {df['Volatility'].iloc[-1]:.4f}
+
+Return ONLY a valid JSON object in this exact format:
+{{
+    "price_target": number,
+    "confidence": number,
+    "timeframe": "string",
+    "key_factors": ["string"],
+    "risk_factors": ["string"],
+    "support_level": number,
+    "resistance_level": number
+}}"""
+
+        try:
+            print("Sending request to OpenRouter API...")
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=self.headers,
+                json={
+                    "model": "deepseek/deepseek-r1-distill-llama-70b",
+                    "messages": [
+                        {"role": "system", "content": "You are a market analysis AI. Respond only with valid JSON objects. For timeframe use one of: ['Short-term (1-3 days)', 'Medium-term (1-2 weeks)', 'Long-term (1+ month)']. Price targets should be within ±15% of current price."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 250
+                }
+            )
+            
+            print(f"API Response Status: {response.status_code}")
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+                    print("Full API Response:", result)
+                    
+                    if 'choices' in result and len(result['choices']) > 0:
+                        content = result['choices'][0]['message']['content'].strip()
+                        print("Raw Content:", content)
+                        
+                        # Try to clean the content if it has markdown code blocks
+                        if content.startswith("```json"):
+                            content = content.replace("```json", "").replace("```", "").strip()
+                        elif content.startswith("```"):
+                            content = content.replace("```", "").strip()
+                        
+                        json_content = json.loads(content)
+                        required_fields = ['price_target', 'confidence', 'timeframe', 'key_factors', 'risk_factors', 'support_level', 'resistance_level']
+                        if all(field in json_content for field in required_fields):
+                            print("✅ Price prediction received and validated")
+                            print(f"Price target: {json_content['price_target']} ({json_content['timeframe']}) with {json_content['confidence']}% confidence")
+                            return json.dumps(json_content)
+                        else:
+                            raise ValueError("Missing required fields in JSON response")
+                    else:
+                        raise ValueError("No choices in API response")
+                except Exception as e:
+                    print(f"❌ Error processing API response: {str(e)}")
+                    print("Raw response content:", content if 'content' in locals() else "No content")
+                    return json.dumps({
+                        "price_target": current_price,
+                        "confidence": 0,
+                        "timeframe": "Unknown",
+                        "key_factors": ["Analysis failed - invalid response format"],
+                        "risk_factors": ["Unable to determine risks"],
+                        "support_level": current_price * 0.95,
+                        "resistance_level": current_price * 1.05
+                    })
+            else:
+                print(f"❌ API request failed: {response.text}")
+                return json.dumps({
+                    "price_target": current_price,
+                    "confidence": 0,
+                    "timeframe": "Unknown",
+                    "key_factors": ["Analysis failed - API error"],
+                    "risk_factors": ["Unable to determine risks"],
+                    "support_level": current_price * 0.95,
+                    "resistance_level": current_price * 1.05
+                })
+        except Exception as e:
+            print(f"❌ Error in price prediction: {str(e)}")
+            return json.dumps({
+                "price_target": current_price,
+                "confidence": 0,
+                "timeframe": "Unknown",
+                "key_factors": ["Analysis failed - system error"],
+                "risk_factors": ["Unable to determine risks"],
+                "support_level": current_price * 0.95,
+                "resistance_level": current_price * 1.05
+            })
+
+    def _get_sentiment_analysis(self, df):
         """Analyze market sentiment using price action and indicators"""
         print("\nMaking API call for sentiment analysis...")
         
@@ -427,7 +730,7 @@ Return ONLY a valid JSON object in this exact format:
                 "market_psychology": "Analysis failed"
             })
 
-def _get_market_context(self, df):
+    def _get_market_context(self, df):
         """Analyze broader market context and potential scenarios"""
         print("\nMaking API call for market context analysis...")
         
@@ -566,7 +869,7 @@ Return ONLY a valid JSON object in this exact format:
                 "recommended_position_size": "Analysis failed"
             })
 
-def analyze(self, symbol, timeframe='1d', period='3mo'):
+    def analyze(self, symbol, timeframe='1d', period='3mo'):
         """Perform comprehensive market analysis using AI"""
         print(f"\n=== Fetching Data for {symbol} ===")
         print(f"Timeframe: {timeframe}, Period: {period}")
